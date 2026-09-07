@@ -1,0 +1,25 @@
+CREATE TABLE `products` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `category_id` CHAR(36) NULL,
+    `sku` VARCHAR(64) NULL,
+    `barcode` VARCHAR(64) NULL,
+    `name` VARCHAR(180) NOT NULL,
+    `unit` ENUM('pc', 'kg', 'g', 'l', 'ml', 'box', 'pack', 'service') NOT NULL DEFAULT 'pc',
+    `allow_decimal_qty` TINYINT(1) NOT NULL DEFAULT 0,
+    `cost` DECIMAL(10,2) NOT NULL DEFAULT 0,
+    `price` DECIMAL(10,2) NOT NULL DEFAULT 0,
+    `tax_rate` DECIMAL(5,2) NOT NULL DEFAULT 0,
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_products_tenant_sku` (`tenant_id`, `sku`),
+    UNIQUE KEY `uq_products_tenant_barcode` (`tenant_id`, `barcode`),
+    KEY `idx_products_tenant` (`tenant_id`),
+    KEY `idx_products_category` (`category_id`),
+    KEY `idx_products_active` (`tenant_id`, `is_active`),
+    CONSTRAINT `fk_products_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `tenants`(`id`),
+    CONSTRAINT `fk_products_category` FOREIGN KEY (`category_id`) REFERENCES `categories`(`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

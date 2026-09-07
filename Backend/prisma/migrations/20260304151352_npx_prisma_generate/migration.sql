@@ -1,0 +1,3 @@
+-- no-op migration
+-- This migration was auto-created by mistake during `npx prisma generate`.
+-- Keeping it empty prevents FK drift errors on legacy environments.

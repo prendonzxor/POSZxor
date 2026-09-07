@@ -1,0 +1,2 @@
+ALTER TABLE `categories`
+  ADD COLUMN `estatus` TINYINT(1) NOT NULL DEFAULT 1;

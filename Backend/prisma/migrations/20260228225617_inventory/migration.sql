@@ -1,0 +1,7 @@
+-- No-op migration.
+-- This migration originally attempted to alter foreign keys on tables that
+-- are created in later migrations in this repository order, which breaks
+-- Prisma shadow database execution (P3006/P3018).
+--
+-- Keeping this migration as an intentional no-op preserves migration history
+-- while allowing newer migrations to create and adjust tables in valid order.

@@ -1,0 +1,5 @@
+-- no-op
+-- This migration originally altered `branches` and `inventory` before they existed
+-- in the migration timeline, which breaks shadow database creation.
+-- Inventory tables are created later by:
+-- 20260301000500_inventory_by_branch

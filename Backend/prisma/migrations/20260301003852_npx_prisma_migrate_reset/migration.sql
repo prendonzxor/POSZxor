@@ -1,0 +1,4 @@
+-- No-op migration.
+-- This migration was accidentally generated during a reset workflow and
+-- contains DDL that depends on tables not yet created in this migration order.
+-- Keeping it as no-op preserves history and avoids shadow DB failures.
