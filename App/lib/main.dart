@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:poszxor_app/core/services/server_clock.dart';
 
 import 'package:flutter/material.dart';
 import 'package:poszxor_app/core/config/data_mode.dart';
@@ -9,6 +10,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppDatabase.instance.database;
   await DataModeController.instance.ensureInitialized();
+  if (AppDataConfig.mode == DataMode.api) ServerClock.instance.start(AppDataConfig.apiBaseUrl);
   runApp(const PosZxorApp());
 }
 

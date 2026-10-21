@@ -1,4 +1,5 @@
 "use client";
+import { serverDateTimeInput, serverDateTimeToIso } from "@/lib/server-time";
 
 import { Button, Input, Switch, TextArea, toast } from "@heroui/react";
 import { useRouter } from "next/navigation";
@@ -45,11 +46,7 @@ const EMPTY_FORM: CouponForm = {
 };
 
 function toDateTimeLocal(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return value ? serverDateTimeInput(value) : "";
 }
 
 function fromCouponToForm(coupon: Coupon): CouponForm {
@@ -155,24 +152,23 @@ export function CouponManagementPage() {
       return;
     }
 
-    const payload = {
-      code: form.code.trim().toUpperCase(),
-      name: form.name.trim(),
-      description: form.description.trim() || null,
-      scope: form.scope,
-      targetRef: form.targetRef.trim() || null,
-      discountType: form.discountType,
-      discountValue: Number(form.discountValue),
-      maxDiscountAmount: form.maxDiscountAmount ? Number(form.maxDiscountAmount) : null,
-      minOrderAmount: form.minOrderAmount ? Number(form.minOrderAmount) : null,
-      usageLimit: form.usageLimit ? Number(form.usageLimit) : null,
-      startsAt: form.startsAt || null,
-      endsAt: form.endsAt || null,
-      isActive: form.isActive,
-    } as const;
-
     try {
       setIsSaving(true);
+      const payload = {
+        code: form.code.trim().toUpperCase(),
+        name: form.name.trim(),
+        description: form.description.trim() || null,
+        scope: form.scope,
+        targetRef: form.targetRef.trim() || null,
+        discountType: form.discountType,
+        discountValue: Number(form.discountValue),
+        maxDiscountAmount: form.maxDiscountAmount ? Number(form.maxDiscountAmount) : null,
+        minOrderAmount: form.minOrderAmount ? Number(form.minOrderAmount) : null,
+        usageLimit: form.usageLimit ? Number(form.usageLimit) : null,
+        startsAt: form.startsAt ? serverDateTimeToIso(form.startsAt) : null,
+        endsAt: form.endsAt ? serverDateTimeToIso(form.endsAt) : null,
+        isActive: form.isActive,
+      } as const;
       if (selectedCouponId) {
         await updateCoupon(token, selectedCouponId, payload);
         toast.success("Cupon actualizado", {

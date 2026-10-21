@@ -1,4 +1,5 @@
 "use client";
+import { serverTimeZone } from "@/lib/server-time";
 
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card } from "@heroui/react";
@@ -276,10 +277,10 @@ export default function OrderDetailsPage() {
             </span>
           ) : null}
           <p className="text-xs text-gray-500">
-            {order?.createdAt ? `Creada: ${new Date(order.createdAt).toLocaleString("es-MX")}` : "Sin fecha disponible"}
+            {order?.createdAt ? `Creada: ${new Date(order.createdAt).toLocaleString("es-MX", { timeZone: serverTimeZone() })}` : "Sin fecha disponible"}
           </p>
           {order?.updatedAt ? (
-            <p className="text-xs text-gray-500">Actualizada: {new Date(order.updatedAt).toLocaleString("es-MX")}</p>
+            <p className="text-xs text-gray-500">Actualizada: {new Date(order.updatedAt).toLocaleString("es-MX", { timeZone: serverTimeZone() })}</p>
           ) : null}
         </div>
       </div>

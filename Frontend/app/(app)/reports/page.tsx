@@ -1,5 +1,7 @@
 "use client";
 
+import { StockValidationReports } from "./stock-validation-reports";
+import { CashReportPanel } from "./cash-report";
 import { Card } from "@heroui/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -45,23 +47,23 @@ const salesReportPeriodLabels: Record<SalesReportPeriod, string> = {
 
 function getDateKey(date: Date) {
   return [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0"),
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
   ].join("-");
 }
 
 function getWeekStart(date: Date) {
   const nextDate = new Date(date);
-  const day = nextDate.getDay();
+  const day = nextDate.getUTCDay();
   const diff = day === 0 ? -6 : 1 - day;
-  nextDate.setDate(nextDate.getDate() + diff);
-  nextDate.setHours(0, 0, 0, 0);
+  nextDate.setUTCDate(nextDate.getUTCDate() + diff);
+  nextDate.setUTCHours(0, 0, 0, 0);
   return nextDate;
 }
 
 function formatShortDate(date: Date) {
-  return date.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
+  return date.toLocaleDateString("es-MX", { timeZone: "UTC", day: "2-digit", month: "short" });
 }
 
 function buildSalesReportRows(items: AnalyticsSaleByDay[], period: SalesReportPeriod): SalesReportRow[] {
@@ -79,14 +81,14 @@ function buildSalesReportRows(items: AnalyticsSaleByDay[], period: SalesReportPe
     if (period === "week") {
       const weekStart = getWeekStart(date);
       const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
+      weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
       key = getDateKey(weekStart);
       label = `${formatShortDate(weekStart)} - ${formatShortDate(weekEnd)}`;
     }
 
     if (period === "month") {
-      key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      label = date.toLocaleDateString("es-MX", { month: "short", year: "numeric" });
+      key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+      label = date.toLocaleDateString("es-MX", { timeZone: "UTC", month: "short", year: "numeric" });
     }
 
     const row = rowsByKey.get(key) || {
@@ -104,8 +106,21 @@ function buildSalesReportRows(items: AnalyticsSaleByDay[], period: SalesReportPe
   return Array.from(rowsByKey.values()).sort((a, b) => a.key.localeCompare(b.key));
 }
 
+const reportTabs = [
+  { id: "overview", label: "Ventas e inventario", description: "Resumen comercial, productos mas vendidos y ventas de los ultimos 90 dias." },
+  { id: "stock", label: "Stock cero", description: "Consulta validaciones guardadas, revisa los ajustes a cero y descarga sus reportes CSV." },
+  { id: "cash", label: "Caja y movimientos", description: "Revisa saldos diarios, diferencias de caja y movimientos por sucursal y periodo." },
+] as const;
+type ReportTab = (typeof reportTabs)[number]["id"];
+
 export default function ReportsPage() {
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<ReportTab>("overview");
+  const [visitedTabs, setVisitedTabs] = useState<ReportTab[]>(["overview"]);
+  const activateTab = (tab: ReportTab) => {
+    setActiveTab(tab);
+    setVisitedTabs((current) => current.includes(tab) ? current : [...current, tab]);
+  };
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [salesReportPeriod, setSalesReportPeriod] = useState<SalesReportPeriod>("day");
@@ -249,11 +264,41 @@ export default function ReportsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 sm:text-3xl">Reportes</h1>
-          <p className="mt-2 text-sm text-gray-600">Resumen de ventas, ordenes y actividad comercial de los ultimos 90 dias.</p>
-          {errorMessage ? <p className="mt-2 text-sm text-red-600">{errorMessage}</p> : null}
+          <p className="mt-2 text-sm text-gray-600">Consulta tus ventas, el inventario y la actividad de caja en un solo lugar.</p>
+
         </div>
       </div>
 
+      <div className="rounded-xl border border-gray-200 bg-white p-2 shadow-sm">
+        <div role="tablist" aria-label="Tipo de reporte" aria-orientation="horizontal" className="flex gap-1 overflow-x-auto">
+          {reportTabs.map((tab, index) => <button
+            key={tab.id}
+            id={`report-tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`report-panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => activateTab(tab.id)}
+            onKeyDown={(event) => {
+              let nextIndex: number;
+              if (event.key === "ArrowRight") nextIndex = (index + 1) % reportTabs.length;
+              else if (event.key === "ArrowLeft") nextIndex = (index - 1 + reportTabs.length) % reportTabs.length;
+              else if (event.key === "Home") nextIndex = 0;
+              else if (event.key === "End") nextIndex = reportTabs.length - 1;
+              else return;
+              event.preventDefault();
+              activateTab(reportTabs[nextIndex].id);
+              document.getElementById(`report-tab-${reportTabs[nextIndex].id}`)?.focus();
+            }}
+            className={`flex-1 whitespace-nowrap rounded-lg px-4 py-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset ${activeTab === tab.id ? "bg-blue-50 text-blue-700 shadow-sm" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`}
+          >{tab.label}</button>)}
+        </div>
+      </div>
+      <p className="text-sm text-gray-500">{reportTabs.find((tab) => tab.id === activeTab)?.description}</p>
+
+      <div id="report-panel-overview" role="tabpanel" aria-labelledby="report-tab-overview" hidden={activeTab !== "overview"} tabIndex={0} className="space-y-6 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+      {errorMessage && <p role="alert" className="text-sm text-red-600">{errorMessage}</p>}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <Card className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
           <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Ventas</p>
@@ -341,7 +386,7 @@ export default function ReportsPage() {
                           />
                         </div>
                         <p className="mt-2 text-center text-[10px] font-medium text-gray-500">
-                          {date.getDate().toString().padStart(2, "0")}
+                          {date.getUTCDate().toString().padStart(2, "0")}
                         </p>
                       </div>
                     );
@@ -498,6 +543,13 @@ export default function ReportsPage() {
           )}
         </div>
       </Card>
+      </div>
+      </div>
+      <div id="report-panel-stock" role="tabpanel" aria-labelledby="report-tab-stock" hidden={activeTab !== "stock"} tabIndex={0} className="rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+        {visitedTabs.includes("stock") && <StockValidationReports />}
+      </div>
+      <div id="report-panel-cash" role="tabpanel" aria-labelledby="report-tab-cash" hidden={activeTab !== "cash"} tabIndex={0} className="rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+        {visitedTabs.includes("cash") && <CashReportPanel />}
       </div>
     </section>
   );

@@ -1,11 +1,11 @@
+"use client";
+import { useServerTime } from "../server-time-provider";
+import { serverTimeZone } from "@/lib/server-time";
 import { Card } from "@heroui/react";
 
 export function AppSidebarBrand() {
-  const buildDate = new Date().toLocaleDateString("es-MX", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
+  const now = useServerTime();
+  const buildDate = now.toLocaleDateString("es-MX", { timeZone: serverTimeZone(), day: "2-digit", month: "short", year: "numeric" });
 
   return (
     <Card className="relative overflow-hidden rounded-2xl border border-blue-400/40 bg-linear-to-br from-blue-600 via-blue-700 to-indigo-700 p-4 text-white shadow-lg">

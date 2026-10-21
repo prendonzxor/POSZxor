@@ -1,0 +1,25 @@
+CREATE TABLE `cash_register_sessions` (
+  `id` CHAR(36) NOT NULL,
+  `tenant_id` CHAR(36) NOT NULL,
+  `branch_id` CHAR(36) NOT NULL,
+  `opened_by` INT NOT NULL,
+  `closed_by` INT NULL,
+  `opening_balance` DECIMAL(12,2) NOT NULL,
+  `expected_cash` DECIMAL(12,2) NULL,
+  `counted_cash` DECIMAL(12,2) NULL,
+  `difference` DECIMAL(12,2) NULL,
+  `sale_count` INT NULL,
+  `opened_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `closed_at` DATETIME(3) NULL,
+  `active_branch_id` CHAR(36) NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_cash_register_active_branch` (`active_branch_id`),
+  KEY `idx_cash_register_tenant_branch` (`tenant_id`, `branch_id`, `opened_at`),
+  CONSTRAINT `fk_cash_register_tenant` FOREIGN KEY (`tenant_id`) REFERENCES `tenants` (`id`),
+  CONSTRAINT `fk_cash_register_branch` FOREIGN KEY (`branch_id`) REFERENCES `branches` (`id`),
+  CONSTRAINT `fk_cash_register_opened_by` FOREIGN KEY (`opened_by`) REFERENCES `User` (`id`),
+  CONSTRAINT `fk_cash_register_closed_by` FOREIGN KEY (`closed_by`) REFERENCES `User` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ALTER TABLE `orders` ADD COLUMN `cash_register_session_id` CHAR(36) NULL,
+  ADD KEY `idx_orders_cash_register_session` (`cash_register_session_id`),
+  ADD CONSTRAINT `fk_orders_cash_register_session` FOREIGN KEY (`cash_register_session_id`) REFERENCES `cash_register_sessions` (`id`);

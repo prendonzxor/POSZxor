@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ServerTimeProvider } from "./server-time-provider";
 
 export const metadata: Metadata = {
   title: "POS Zxor Admin",
@@ -13,7 +14,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es" className="light" data-theme="light">
-      <body>{children}</body>
+      <body><ServerTimeProvider>{children}</ServerTimeProvider></body>
     </html>
   );
 }

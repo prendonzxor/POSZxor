@@ -371,6 +371,7 @@ router.get("/", async (req, res) => {
 
     return res.status(200).json(response);
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     return res.status(500).json({ message: "error al obtener ordenes", error: error.message });
   }
 });
@@ -427,6 +428,7 @@ router.get("/:id", async (req, res) => {
 
     return res.status(200).json({ message: "orden obtenida", order });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     return res.status(500).json({ message: "error al obtener orden", error: error.message });
   }
 });
@@ -480,6 +482,7 @@ router.post("/:id/cancel", async (req, res) => {
       order: result.order,
     });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     return res.status(500).json({ message: "error al cancelar orden", error: error.message });
   }
 });
@@ -573,6 +576,7 @@ router.put("/:id", async (req, res) => {
 
     return res.status(200).json({ message: "orden actualizada", order });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     if (error.message?.includes("no hay campos para actualizar")) {
       return res.status(400).json({ message: error.message });
     }
@@ -680,6 +684,7 @@ router.post("/checkout", async (req, res) => {
 
     const order = await createCheckoutOrder({
       tenantId: authContext.tenantId,
+      cashRegisterSessionId: req.body?.cashRegisterSessionId || undefined,
       createdBy: authContext.userId,
       branchId,
       customerId,
@@ -716,6 +721,7 @@ router.post("/checkout", async (req, res) => {
 
     return res.status(201).json({ message: "checkout creado", order });
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     if (error.message?.includes("items[")) {
       return res.status(400).json({ message: error.message });
     }

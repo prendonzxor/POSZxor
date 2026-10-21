@@ -1,3 +1,4 @@
+import { fetchServerTime } from "./lib/server-time";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
@@ -36,13 +37,12 @@ function parseDate(value?: string | null): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function getSubscriptionValidity(subscription: TenantSubscription | null) {
+function getSubscriptionValidity(subscription: TenantSubscription | null, now: Date) {
   if (!subscription) {
     return { isValid: false, reason: "sin suscripcion" };
   }
 
   const status = String(subscription.status || "").trim().toLowerCase();
-  const now = new Date();
 
   if (status === "canceled") {
     return { isValid: false, reason: "suscripcion cancelada" };
@@ -112,7 +112,8 @@ async function logInvalidSubscription(authToken: string) {
       subscriptionStatus?: string | null;
     };
     const subscription = data.subscription || null;
-    const validity = getSubscriptionValidity(subscription);
+    const time = await fetchServerTime();
+    const validity = getSubscriptionValidity(subscription, new Date(time.serverTime));
 
     if (!validity.isValid) {
       console.log("[subscription] suscripcion no valida", {

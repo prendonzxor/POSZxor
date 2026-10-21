@@ -321,7 +321,7 @@ export function ProductsServicesSheet({
             <select
               className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
               value={form.unit}
-              onChange={(event) => setForm((prev) => ({ ...prev, unit: event.target.value as Unit }))}
+              onChange={(event) => { const unit = event.target.value as Unit; setForm((prev) => ({ ...prev, unit, allow_decimal_qty: ["kg", "g", "l", "ml"].includes(unit) ? "1" : prev.allow_decimal_qty })); }}
             >
               {unitOptions.map((option) => (
                 <option key={option} value={option}>
@@ -329,6 +329,7 @@ export function ProductsServicesSheet({
                 </option>
               ))}
             </select>
+            {["kg", "g", "l", "ml"].includes(form.unit) && <p className="mt-1 text-xs text-gray-500">Ingresa precio y existencias por {form.unit}. En POS puedes vender fracciones, por ejemplo 0.5 kg si eliges kg.</p>}
             <FieldError className="text-xs" />
           </TextField>
         </div>
@@ -391,7 +392,8 @@ export function ProductsServicesSheet({
             <Label className="text-sm font-medium text-gray-800">Permitir decimales</Label>
             <select
               className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800"
-              value={form.allow_decimal_qty}
+              disabled={["kg", "g", "l", "ml"].includes(form.unit)}
+              value={["kg", "g", "l", "ml"].includes(form.unit) ? "1" : form.allow_decimal_qty}
               onChange={(event) => setForm((prev) => ({ ...prev, allow_decimal_qty: event.target.value }))}
             >
               <option value="0">No</option>
@@ -430,7 +432,7 @@ export function ProductsServicesSheet({
             <FieldError className="text-xs" />
           </TextField>
           <TextField>
-            <Label className="text-sm font-medium text-gray-800">Precio</Label>
+            <Label className="text-sm font-medium text-gray-800">Precio por {form.unit}</Label>
             <Input
               type="number"
               step="0.01"
@@ -445,7 +447,7 @@ export function ProductsServicesSheet({
             <FieldError className="text-xs" />
           </TextField>
           <TextField>
-            <Label className="text-sm font-medium text-gray-800">Precio mayoreo</Label>
+            <Label className="text-sm font-medium text-gray-800">Precio mayoreo por {form.unit}</Label>
             <Input
               type="number"
               step="0.01"

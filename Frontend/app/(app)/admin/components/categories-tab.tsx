@@ -1,4 +1,5 @@
 "use client";
+import { serverTimeZone } from "@/lib/server-time";
 
 import { Button, Input, Label, Tabs } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
@@ -219,7 +220,7 @@ export function CategoriesTab() {
                 {category.estatus ? "Habilitada" : "Deshabilitada"}
               </span>
             </p>
-            <p>{new Date(category.createdAt).toLocaleDateString("es-MX")}</p>
+            <p>{new Date(category.createdAt).toLocaleDateString("es-MX", { timeZone: serverTimeZone() })}</p>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"

@@ -7,6 +7,7 @@ export type CheckoutItemRequest = {
 };
 
 export type CheckoutRequest = {
+  cashRegisterSessionId?: string;
   branchId: string;
   customerId?: string | null;
   orderType: "pos" | "delivery" | "pickup";

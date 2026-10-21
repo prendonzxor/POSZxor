@@ -1,5 +1,7 @@
 "use client";
 
+import { serverDateKey } from "@/lib/server-time";
+
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Card, Collection, ComboBox, EmptyState, FieldError, Input, Label, ListBox, Spinner, TextField, toast } from "@heroui/react";
 import { useAsyncList } from "@react-stately/data";
@@ -10,6 +12,9 @@ import { createCheckoutOrder } from "@/api-implementations/orders";
 import { getPrimaryBranch } from "@/api-implementations/branches";
 import { getInventory } from "@/api-implementations/inventory";
 
+import { useTenantRuntime } from "../tenant-runtime-context";
+import { CashRegisterPanel, useCashRegister } from "./cash-register";
+
 type ProductOption = {
   id: string;
   name: string;
@@ -17,6 +22,8 @@ type ProductOption = {
   barcode: string | null;
   price: number;
   wholesalePrice: number;
+  unit: string;
+  allowDecimalQty: boolean;
   qtyOnHand: number;
   qtyReserved: number;
 };
@@ -27,15 +34,19 @@ const getProductOptionTextValue = (product: ProductOption) =>
 const isNumericProductQuery = (value: string) => /^\d+$/.test(value.trim());
 
 const getAvailableStock = (qtyOnHand: number, qtyReserved = 0) =>
-  Math.max(0, Number(qtyOnHand || 0) - Number(qtyReserved || 0));
+  Math.max(0, Math.round((Number(qtyOnHand || 0) - Number(qtyReserved || 0)) * 1000) / 1000);
 
 const hasStock = (product: ProductOption) => getAvailableStock(product.qtyOnHand, product.qtyReserved) > 0;
+
+const allowsFraction = (product: { unit: string; allowDecimalQty: boolean }) => product.allowDecimalQty || ["kg", "g", "l", "ml"].includes(product.unit);
+const roundQuantity = (value: number) => Math.round(value * 1000) / 1000;
 
 type CartItem = {
   id: string;
   name: string;
   quantity: number;
   unitPrice: number;
+  unit: string;
 };
 
 type PosOrderType = "pos" | "pos_wholesale" | "delivery" | "pickup" | "cotizacion";
@@ -63,6 +74,9 @@ export default function CreatePosOrdersPage() {
   const [taxAmount, setTaxAmount] = useState("0.00");
   const [branchId, setBranchId] = useState("");
   const [branchName, setBranchName] = useState("");
+  const { tenant } = useTenantRuntime();
+  const cashRegister = useCashRegister(tenant?.id, branchId);
+  const isPosLocked = !cashRegister.ready || !cashRegister.active || cashRegister.loading;
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [orderFeedback, setOrderFeedback] = useState<string | null>(null);
@@ -79,12 +93,14 @@ export default function CreatePosOrdersPage() {
     phone: "",
     email: "",
   });
+  const quantityInputRef = useRef<HTMLInputElement | null>(null);
   const cashReceivedInputRef = useRef<HTMLInputElement | null>(null);
   const customerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const productSearchInputRef = useRef<HTMLInputElement | null>(null);
   const pendingProductToAddRef = useRef<ProductOption | null>(null);
 
   const focusCustomerSearch = useCallback(() => {
+    if (isPosLocked) return;
     window.setTimeout(() => {
       const input = customerSearchInputRef.current;
       if (!input) {
@@ -102,9 +118,10 @@ export default function CreatePosOrdersPage() {
       });
       input.focus({ preventScroll: true });
     }, 0);
-  }, []);
+  }, [isPosLocked]);
 
   const focusProductSearch = useCallback(() => {
+    if (isPosLocked) return;
     window.setTimeout(() => {
       const input = productSearchInputRef.current;
       if (!input) {
@@ -113,7 +130,7 @@ export default function CreatePosOrdersPage() {
 
       input.focus({ preventScroll: true });
     }, 0);
-  }, []);
+  }, [isPosLocked]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(focusCustomerSearch, 0);
@@ -122,6 +139,16 @@ export default function CreatePosOrdersPage() {
       window.clearTimeout(timeoutId);
     };
   }, [focusCustomerSearch]);
+
+  useEffect(() => {
+    if (!isPosLocked) return;
+    const timeoutId = window.setTimeout(() => {
+      setIsCashPaymentModalOpen(false);
+      setCashPaymentError(null);
+      setIsCreateCustomerSheetOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [isPosLocked]);
 
   const handleAuthError = (error: unknown) => {
     const message = error instanceof Error ? error.message.toLowerCase() : "";
@@ -158,13 +185,10 @@ export default function CreatePosOrdersPage() {
 
     const currentCartQuantity = cartItems.find((item) => item.id === selectedProduct.id)?.quantity || 0;
     const availableQuantity = getAvailableStock(selectedProduct.qtyOnHand, selectedProduct.qtyReserved);
-    return Math.max(0, availableQuantity - currentCartQuantity);
+    return Math.max(0, roundQuantity(availableQuantity - currentCartQuantity));
   };
 
   const handleOrderQuantityChange = (value: string) => {
-    const selectedProduct = pendingProductToAddRef.current || pendingProductToAdd;
-    const remainingStock = getRemainingAvailableStock(selectedProduct);
-
     if (!value) {
       setOrderQuantity(value);
       return;
@@ -175,13 +199,9 @@ export default function CreatePosOrdersPage() {
       return;
     }
 
-    const normalizedQuantity = Math.max(1, Math.trunc(parsedQuantity));
-    if (remainingStock !== null) {
-      setOrderQuantity(String(Math.min(normalizedQuantity, remainingStock)));
-      return;
-    }
+    // Keep partially typed decimals editable; validate precision when adding the item.
+    setOrderQuantity(value);
 
-    setOrderQuantity(String(normalizedQuantity));
   };
   const selectedProductRemainingStock = getRemainingAvailableStock(pendingProductToAdd);
 
@@ -199,10 +219,14 @@ export default function CreatePosOrdersPage() {
   }, [orderQuantity, selectedProductRemainingStock]);
 
   const addProductToCart = (selectedProduct: ProductOption) => {
-    const nextQuantity = Math.max(1, Number(orderQuantity) || 1);
+    const nextQuantity = Number(orderQuantity);
+    if (!Number.isFinite(nextQuantity) || nextQuantity <= 0 || Math.abs(nextQuantity * 1000 - Math.round(nextQuantity * 1000)) > 0.00001 || (!allowsFraction(selectedProduct) && !Number.isInteger(nextQuantity))) {
+      toast.danger("Cantidad invalida", { description: allowsFraction(selectedProduct) ? "Ingresa una cantidad mayor a cero con hasta 3 decimales (ej. 0.5 kg)." : "Este producto se vende en unidades enteras." });
+      return;
+    }
     const currentCartQuantity = cartItems.find((item) => item.id === selectedProduct.id)?.quantity || 0;
     const availableQuantity = getAvailableStock(selectedProduct.qtyOnHand, selectedProduct.qtyReserved);
-    const nextCartQuantity = currentCartQuantity + nextQuantity;
+    const nextCartQuantity = roundQuantity(currentCartQuantity + nextQuantity);
 
     if (nextCartQuantity > availableQuantity) {
       toast.danger("Stock insuficiente", {
@@ -234,6 +258,7 @@ export default function CreatePosOrdersPage() {
             name: selectedProduct.name,
             quantity: nextQuantity,
             unitPrice: nextUnitPrice,
+            unit: selectedProduct.unit,
           },
         ];
       }
@@ -242,7 +267,7 @@ export default function CreatePosOrdersPage() {
         index === existingIndex
           ? {
               ...item,
-              quantity: item.quantity + nextQuantity,
+              quantity: roundQuantity(item.quantity + nextQuantity),
               unitPrice: nextUnitPrice > 0 ? nextUnitPrice : item.unitPrice,
             }
           : item,
@@ -371,16 +396,26 @@ export default function CreatePosOrdersPage() {
         return;
       }
 
-      addProductToCart({
+      const selected: ProductOption = {
         id: product.id,
         name: product.name,
         sku: product.sku,
         barcode: product.barcode,
         price: Number(product.price || 0),
         wholesalePrice: Number(product.wholesalePrice || product.price || 0),
+        unit: product.unit,
+        allowDecimalQty: product.allowDecimalQty,
         qtyOnHand,
         qtyReserved,
-      });
+      };
+      if (allowsFraction(selected)) {
+        pendingProductToAddRef.current = selected;
+        setPendingProductToAdd(selected);
+        setSelectedProductId(selected.id);
+        setProductSearchValue(selected.name);
+        setOrderQuantity("1");
+        window.setTimeout(() => { quantityInputRef.current?.focus(); quantityInputRef.current?.select(); }, 0);
+      } else addProductToCart(selected);
     } catch (error) {
       if (handleAuthError(error)) {
         return;
@@ -428,7 +463,7 @@ export default function CreatePosOrdersPage() {
 
         return [
           `${index + 1}. ${item.name}`,
-          `   Cantidad: ${quantity}`,
+          `   Cantidad: ${quantity} ${item.unit}`,
           `   Precio: $${unitPrice.toFixed(2)}`,
           `   Subtotal: $${subtotal.toFixed(2)}`,
         ];
@@ -531,7 +566,7 @@ export default function CreatePosOrdersPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `cotizacion-${new Date().toISOString().slice(0, 10)}.txt`;
+    link.download = `cotizacion-${serverDateKey()}.txt`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -597,6 +632,8 @@ export default function CreatePosOrdersPage() {
                 barcode: product.barcode,
                 price: Number(product.price || 0),
                 wholesalePrice: Number(product.wholesalePrice || product.price || 0),
+                unit: product.unit,
+                allowDecimalQty: product.allowDecimalQty,
                 qtyOnHand: stock?.qtyOnHand || 0,
                 qtyReserved: stock?.qtyReserved || 0,
               };
@@ -668,8 +705,16 @@ export default function CreatePosOrdersPage() {
   }, []);
 
   const handleCreateOrder = async (options?: { forceCash?: boolean }) => {
+    if (isPosLocked) return;
     if (isQuoteOrder) {
       await copyQuoteForWhatsApp();
+      return;
+    }
+
+    try {
+      cashRegister.requireOpen();
+    } catch (error) {
+      toast.danger("Caja cerrada", { description: error instanceof Error ? error.message : "Abre la caja antes de vender." });
       return;
     }
 
@@ -748,6 +793,7 @@ export default function CreatePosOrdersPage() {
         orderType === "pos_wholesale" || orderType === "cotizacion" ? "pos" : orderType;
       const response = await createCheckoutOrder({
         branchId,
+        cashRegisterSessionId: cashRegister.active?.id,
         customerId: selectedCustomerId,
         orderType: checkoutOrderType,
         paymentType,
@@ -761,6 +807,8 @@ export default function CreatePosOrdersPage() {
           taxAmount: 0,
         })),
       });
+
+      void cashRegister.refresh();
 
       setCartItems([]);
       setSelectedCustomerId(null);
@@ -880,6 +928,10 @@ export default function CreatePosOrdersPage() {
       const isF2 = event.key === "F2" || event.code === "F2";
       const isF4 = event.key === "F4" || event.code === "F4";
       const isF5 = event.key === "F5" || event.code === "F5";
+      if (isPosLocked) {
+        if (isF2 || isF4 || isF5) event.preventDefault();
+        return;
+      }
 
       if (isF2) {
         event.preventDefault();
@@ -924,7 +976,26 @@ export default function CreatePosOrdersPage() {
     isQuoteOrder,
     isSubmittingOrder,
     copyQuoteForWhatsApp,
+    isPosLocked,
   ]);
+
+  if (isPosLocked) {
+    return (
+      <section className={isFullscreen ? "fixed inset-0 z-[90] overflow-y-auto bg-gray-50 p-4 sm:p-6 md:p-8" : "space-y-6"}>
+        <div className="mx-auto max-w-2xl space-y-5">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 sm:text-3xl">POS</h1>
+            {branchName && <p className="mt-1 text-sm text-gray-500">Sucursal: {branchName}</p>}
+          </div>
+          <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+            <h2 className="text-lg font-semibold text-amber-900">{cashRegister.loading ? "Actualizando caja..." : !cashRegister.ready ? "Verificando estado de caja" : "Abre la caja para continuar"}</h2>
+            <p className="mt-2 text-sm text-amber-800">{cashRegister.error ? "No se pudo verificar la caja. Reintenta para continuar." : !cashRegister.ready ? "Espera mientras se carga la sucursal y el estado de la caja." : "Ingresa el fondo inicial y confirma la apertura para habilitar el punto de venta."}</p>
+          </div>
+          <CashRegisterPanel register={cashRegister} busy={isSubmittingOrder} />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section
@@ -952,6 +1023,7 @@ export default function CreatePosOrdersPage() {
       )}
 
       <div className="space-y-6">
+      <CashRegisterPanel register={cashRegister} busy={isSubmittingOrder || isCashPaymentModalOpen} />
       <Card className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
         
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1211,7 +1283,7 @@ export default function CreatePosOrdersPage() {
                           SKU: {product.sku || "-"} | Barcode: {product.barcode || "-"}
                         </span>
                         <span className="text-xs text-gray-500">
-                          Precio: ${getProductPriceForOrderType(product).toFixed(2)}
+                          Precio: ${getProductPriceForOrderType(product).toFixed(2)} / {product.unit}
                         </span>
                         <span className="text-xs text-gray-500">
                           Stock disponible: {getAvailableStock(product.qtyOnHand, product.qtyReserved)}
@@ -1231,12 +1303,14 @@ export default function CreatePosOrdersPage() {
           </ComboBox>
 
           <TextField>
-            <Label className="text-sm font-medium text-gray-800">Cantidad</Label>
+            <Label className="text-sm font-medium text-gray-800">Cantidad{pendingProductToAdd ? ` (${pendingProductToAdd.unit})` : ""}</Label>
             <Input
               type="number"
               className="w-full rounded-full border-border/60"
               placeholder="1"
-              min={selectedProductRemainingStock === 0 ? "0" : "1"}
+              ref={quantityInputRef}
+              step={pendingProductToAdd && allowsFraction(pendingProductToAdd) ? "0.001" : "1"}
+              min={pendingProductToAdd && allowsFraction(pendingProductToAdd) ? "0.001" : "1"}
               max={selectedProductRemainingStock ?? undefined}
               value={orderQuantity}
               onChange={(event) => handleOrderQuantityChange(event.target.value)}
@@ -1249,6 +1323,7 @@ export default function CreatePosOrdersPage() {
                 focusProductSearch();
               }}
             />
+            {pendingProductToAdd && allowsFraction(pendingProductToAdd) && <div className="mt-2 space-y-2"><p className="text-xs text-gray-500">Precio por {pendingProductToAdd.unit}. {pendingProductToAdd.unit === "kg" ? "Medio kilo = 0.5 kg; un kilo = 1 kg." : "Puedes ingresar hasta 3 decimales."}</p><div className="flex gap-2">{[0.25, 0.5, 1].map((value) => <Button key={value} type="button" size="sm" isDisabled={selectedProductRemainingStock !== null && value > selectedProductRemainingStock} onPress={() => setOrderQuantity(String(value))}>{value} {pendingProductToAdd.unit}</Button>)}</div></div>}
             <FieldError className="text-xs" />
           </TextField>
         </div>
@@ -1275,7 +1350,7 @@ export default function CreatePosOrdersPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="break-words text-sm font-semibold text-gray-900">{item.name}</p>
-                          <p className="mt-1 text-xs text-gray-500">Cantidad: {quantity}</p>
+                          <p className="mt-1 text-xs text-gray-500">Cantidad: {quantity} {item.unit}</p>
                         </div>
                         <Button
                           size="sm"
@@ -1333,7 +1408,7 @@ export default function CreatePosOrdersPage() {
                     <td className="max-w-[320px] px-4 py-3 text-gray-800">
                       <span className="line-clamp-2">{item.name}</span>
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-700">{item.quantity}</td>
+                    <td className="px-4 py-3 text-right text-gray-700">{item.quantity} {item.unit}</td>
                     <td className="px-4 py-3 text-right text-gray-700">
                       ${(Number(item.unitPrice) || 0).toFixed(2)}
                     </td>

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:poszxor_app/core/services/server_clock.dart';
 import 'package:poszxor_app/core/config/data_mode.dart';
 import 'package:poszxor_app/core/ui/shad_ui.dart';
 import 'package:poszxor_app/views/onboarding_fullscreen_view.dart';
@@ -69,6 +70,12 @@ class _DataModeSetupViewState extends State<DataModeSetupView> {
       mode: _selected,
       apiBaseUrl: _apiBaseUrlController.text.trim(),
     );
+
+    if (_selected == DataMode.api) {
+      ServerClock.instance.start(AppDataConfig.apiBaseUrl);
+    } else {
+      ServerClock.instance.stop();
+    }
 
     if (!mounted) return;
 

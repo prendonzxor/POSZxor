@@ -1,5 +1,8 @@
 "use client";
 
+import { useServerTime } from "../../server-time-provider";
+import { serverNow, serverDateKey, serverDateTimeInput, serverTimeZone } from "@/lib/server-time";
+
 import { Button, Card, Tabs, toast } from "@heroui/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -35,20 +38,7 @@ function buildBarcodePattern(value: string) {
   return bits;
 }
 
-const toLocalDateTimeInput = (value: string | Date) => {
-  const date = value instanceof Date ? value : new Date(value);
-  const pad = (part: number) => part.toString().padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-};
-
-const isSameLocalDay = (value: string | Date, date = new Date()) => {
-  const movementDate = value instanceof Date ? value : new Date(value);
-  return (
-    movementDate.getFullYear() === date.getFullYear() &&
-    movementDate.getMonth() === date.getMonth() &&
-    movementDate.getDate() === date.getDate()
-  );
-};
+const toLocalDateTimeInput = (value: string | Date) => serverDateTimeInput(value);
 
 const formatMovementType = (type: InventoryMovement["type"]) => {
   const labels: Record<InventoryMovement["type"], string> = {
@@ -83,7 +73,7 @@ const mapInventoryRows = (items: Awaited<ReturnType<typeof getInventory>>["inven
       reorder_level: Number(item.reorderLevel || 0),
       qty_reserved: qtyReserved,
       qty_available: qtyOnHand - qtyReserved,
-      updated_at: updatedAt.toLocaleString("es-MX"),
+      updated_at: updatedAt.toLocaleString("es-MX", { timeZone: serverTimeZone() }),
       updated_at_input: toLocalDateTimeInput(updatedAt),
     };
   });
@@ -106,12 +96,13 @@ type BranchOption = {
 };
 
 export default function InventoryPage() {
+  const today = serverDateKey(useServerTime());
   const router = useRouter();
   const searchParams = useSearchParams();
   const itemId = searchParams.get("item_id") ?? "sin-item";
   const view = searchParams.get("view") === "movements" ? "movements" : "inventory";
   const buildLocalDateTime = () => {
-    const now = new Date();
+    const now = serverNow();
     return toLocalDateTimeInput(now);
   };
   const defaultUpdatedAt = useMemo(() => buildLocalDateTime(), []);
@@ -163,7 +154,7 @@ export default function InventoryPage() {
         const qty = Number(movement.qtyDelta || 0);
         return {
           id: movement.id,
-          date: new Date(movement.createdAt).toLocaleString("es-MX"),
+          date: new Date(movement.createdAt).toLocaleString("es-MX", { timeZone: serverTimeZone() }),
           type: formatMovementType(movement.type),
           qty: `${qty > 0 ? "+" : ""}${formatToFixed3(qty)}`,
           reason: formatMovementReason(movement),
@@ -174,8 +165,8 @@ export default function InventoryPage() {
     [inventoryMovements],
   );
   const movementsTodayCount = useMemo(
-    () => inventoryMovements.filter((movement) => isSameLocalDay(movement.createdAt)).length,
-    [inventoryMovements],
+    () => inventoryMovements.filter((movement) => serverDateKey(movement.createdAt) === today).length,
+    [inventoryMovements, today],
   );
   const selectedProductBarcodePattern = useMemo(
     () => buildBarcodePattern(selectedProductBarcode),

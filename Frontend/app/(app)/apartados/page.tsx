@@ -1,5 +1,7 @@
 "use client";
 
+import { serverCalendarDate, serverDateTimeToIso } from "@/lib/server-time";
+
 import { Button, Card, Collection, ComboBox, EmptyState, FieldError, Input, Label, ListBox } from "@heroui/react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { getBranches, type Branch } from "@/api-implementations/branches";
@@ -61,14 +63,14 @@ const statusClasses: Record<LayawayStatus, string> = {
 };
 
 function getDefaultExpirationDate() {
-  const date = new Date();
-  date.setDate(date.getDate() + 7);
+  const date = serverCalendarDate();
+  date.setUTCDate(date.getUTCDate() + 7);
   return date.toISOString().slice(0, 10);
 }
 
 function toDateTimeIso(dateValue: string) {
   if (!dateValue) return null;
-  return new Date(`${dateValue}T23:59:59`).toISOString();
+  return serverDateTimeToIso(`${dateValue}T23:59:59`);
 }
 
 export default function LayawaysPage() {

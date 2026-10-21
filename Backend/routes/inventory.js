@@ -11,6 +11,7 @@ const {
 const { createNotification } = require("../services/notification.service");
 const { getProductById } = require("../services/product.service");
 const {
+  createNewStockValidationSession,
   completeStockValidationSession,
   ensureStockValidationSession,
   getStockValidationSession,
@@ -355,6 +356,47 @@ router.post("/stock-validations", async (req, res) => {
   } catch (error) {
     return res.status(500).json({ message: "error al crear validacion de stock", error: error.message });
   }
+});
+
+router.post("/stock-validations/new", async (req, res) => {
+  try {
+    const authContext = await resolveTenantIdFromToken(req);
+    if (authContext.error) return res.status(401).json({ message: authContext.error });
+    const branchId = String(req.body?.branchId || "").trim();
+    const periodKey = String(req.body?.periodKey || "").trim();
+    if (!branchId || !/^\d{4}-(0[1-9]|1[0-2])$/.test(periodKey)) return res.status(400).json({ message: "Sucursal y periodo valido son requeridos" });
+    const result = await createNewStockValidationSession({ tenantId: authContext.tenantId, createdBy: authContext.userId, branchId, periodKey });
+    return res.status(201).json({ message: "nueva validacion creada", ...result });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ message: error.message || "error al crear validacion" });
+  }
+});
+
+router.get("/stock-validations/reports", async (req, res) => {
+  try {
+    const auth = await resolveTenantIdFromToken(req);
+    if (auth.error) return res.status(401).json({ message: auth.error });
+    const { listStockValidationReports } = require("../services/stock-validation-report.service");
+    res.json(await listStockValidationReports({ tenantId: auth.tenantId, page: req.query.page === undefined ? 1 : Number(req.query.page) }));
+  } catch (error) { res.status(error.statusCode || 500).json({ message: error.message }); }
+});
+router.get("/stock-validations/:sessionId/report", async (req, res) => {
+  try {
+    const auth = await resolveTenantIdFromToken(req);
+    if (auth.error) return res.status(401).json({ message: auth.error });
+    const { getStockValidationReport } = require("../services/stock-validation-report.service");
+    res.json({ report: await getStockValidationReport({ tenantId: auth.tenantId, sessionId: req.params.sessionId }) });
+  } catch (error) { res.status(error.statusCode || 500).json({ message: error.message }); }
+});
+router.post("/stock-validations/:sessionId/apply", async (req, res) => {
+  try {
+    const auth = await resolveTenantIdFromToken(req);
+    if (auth.error) return res.status(401).json({ message: auth.error });
+    const { applyFullStockValidation } = require("../services/stock-validation-report.service");
+    const report = await applyFullStockValidation({ tenantId: auth.tenantId, createdBy: auth.userId, sessionId: req.params.sessionId,
+      items: req.body?.items, scopeProductIds: req.body?.scopeProductIds });
+    res.json({ report });
+  } catch (error) { res.status(error.statusCode || 500).json({ message: error.message }); }
 });
 
 router.put("/stock-validations/:sessionId/items", async (req, res) => {

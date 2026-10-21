@@ -385,3 +385,39 @@ export async function completeStockValidationSession(
 
   return data as StockValidationSessionResponse;
 }
+
+export async function createNewStockValidationSession(body: { branchId: string; periodKey: string }): Promise<StockValidationSessionResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/inventory/stock-validations/new`, {
+    method: "POST", headers: buildAuthHeaders(), body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "No se pudo crear una nueva validacion.");
+  return data as StockValidationSessionResponse;
+}
+
+export type StockValidationReport = {
+  id: string; sessionId: string; branchId: string; createdAt: string;
+  snapshot: { branchName: string; periodKey: string; items: {
+    productId: string; name: string; sku: string; barcode: string;
+    previousQty: number; realQty: number; differenceQty: number; omitted: boolean;
+  }[] };
+};
+export async function getStockValidationReport(sessionId: string): Promise<{ report: StockValidationReport | null }> {
+  const response = await fetch(`${API_BASE_URL}/api/inventory/stock-validations/${encodeURIComponent(sessionId)}/report`, { headers: buildAuthHeaders(), cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "No se pudo cargar el reporte.");
+  return data;
+}
+export async function applyFullStockValidation(sessionId: string, body: { scopeProductIds: string[]; items: { productId: string; realQty: number }[] }): Promise<{ report: StockValidationReport }> {
+  const response = await fetch(`${API_BASE_URL}/api/inventory/stock-validations/${encodeURIComponent(sessionId)}/apply`, { method: "POST", headers: buildAuthHeaders(), body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "No se pudo aplicar el conteo.");
+  return data;
+}
+
+export async function listStockValidationReports(page = 1): Promise<{ reports: StockValidationReport[]; total: number; page: number; pageSize: number }> {
+  const response = await fetch(`${API_BASE_URL}/api/inventory/stock-validations/reports?page=${page}`, { headers: buildAuthHeaders(), cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "No se pudieron cargar los reportes de stock.");
+  return data;
+}

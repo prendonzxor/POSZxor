@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import '../../../core/services/server_clock.dart';
 
 import '../../../core/config/data_mode.dart';
 import '../domain/dashboard_overview.dart';
@@ -12,6 +13,7 @@ class DashboardApiDataSource implements DashboardDataSource {
 
   @override
   Future<DashboardOverview> getOverview() async {
+    await ServerClock.instance.synchronize(AppDataConfig.apiBaseUrl);
     final baseUri = Uri.parse(AppDataConfig.apiBaseUrl);
     final uri = baseUri.resolve('/api/analytics/overview?days=7');
 

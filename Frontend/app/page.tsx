@@ -1,4 +1,6 @@
 "use client";
+import { useServerTime } from "./server-time-provider";
+import { serverTimeZone } from "@/lib/server-time";
 
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
@@ -43,6 +45,7 @@ const features = [
 ];
 
 export default function Home() {
+  const serverDate = useServerTime();
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [cookieConsent, setCookieConsent] = useState<"accepted" | "rejected" | null>(null);
   const whatsappHref = `https://wa.me/525587654321?text=${encodeURIComponent(
@@ -369,7 +372,7 @@ export default function Home() {
             </div>
           </div>
           <div className="border-t border-white/10 py-4 text-center text-xs text-slate-400">
-            © {new Date().getFullYear()} POSZxor. Todos los derechos reservados.
+            © {new Intl.DateTimeFormat("en", { timeZone: serverTimeZone(), year: "numeric" }).format(serverDate)} POSZxor. Todos los derechos reservados.
           </div>
         </footer>
       </main>

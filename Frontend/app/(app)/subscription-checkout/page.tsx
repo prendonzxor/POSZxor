@@ -1,5 +1,7 @@
 "use client";
 
+import { serverNow } from "@/lib/server-time";
+
 import { useEffect, useState } from "react";
 import { Button, toast } from "@heroui/react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -23,7 +25,7 @@ function normalizeAmount(value: string | null) {
 
 function addMonths(date: Date, months: number) {
   const nextDate = new Date(date);
-  nextDate.setMonth(nextDate.getMonth() + months);
+  nextDate.setUTCMonth(nextDate.getUTCMonth() + months);
   return nextDate;
 }
 
@@ -190,7 +192,7 @@ export default function SubscriptionCheckoutPage() {
         throw new Error(`La suscripcion no fue autorizada. Estado: ${preapprovalStatus}.`);
       }
 
-      const currentPeriodStart = new Date();
+      const currentPeriodStart = serverNow();
       const currentPeriodEnd = addMonths(currentPeriodStart, 1);
       const preapprovalId = preapprovalResponse.preapproval?.id
         ? String(preapprovalResponse.preapproval.id)

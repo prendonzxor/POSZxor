@@ -5,6 +5,21 @@ const { getBackendHealth } = require("../services/health.service");
 
 /**
  * @swagger
+ * /api/time:
+ *   get:
+ *     tags: [System]
+ *     summary: Authoritative server time (UTC) and business calendar date
+ *     responses:
+ *       200:
+ *         description: serverTime (ISO UTC), epochMilliseconds, timeZone, date (YYYY-MM-DD)
+ */
+router.get("/time", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(require("../services/server-time.service").getServerTime());
+});
+
+/**
+ * @swagger
  * /api/status:
  *   get:
  *     tags:

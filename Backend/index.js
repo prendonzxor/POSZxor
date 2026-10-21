@@ -56,6 +56,7 @@ app.use("/api/inventory-movements", inventoryMovementsRouter);
 app.use("/api/customers", customersRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/orders", ordersRouter);
+app.use("/api/cash-register", require("./routes/cash-register"));
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/subscription-plans", subscriptionPlansRouter);
 app.use("/api/promotions", promotionsRouter);

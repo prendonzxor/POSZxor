@@ -1,5 +1,8 @@
 "use client";
 
+import { useServerTime } from "../../server-time-provider";
+import { serverDateKey } from "@/lib/server-time";
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card } from "@heroui/react";
 import { useRouter } from "next/navigation";
@@ -12,9 +15,9 @@ const salesDayFormatter = new Intl.DateTimeFormat("es-MX", {
   weekday: "short",
 });
 
-function formatRelativeTime(value: string) {
+function formatRelativeTime(value: string, now: Date) {
   const date = new Date(value);
-  const diffMs = date.getTime() - Date.now();
+  const diffMs = date.getTime() - now.getTime();
   const diffMinutes = Math.round(diffMs / 60000);
   const diffHours = Math.round(diffMinutes / 60);
   const diffDays = Math.round(diffHours / 24);
@@ -32,6 +35,8 @@ function formatRelativeTime(value: string) {
 
 export default function DashboardPage() {
   
+  const now = useServerTime();
+  const today = serverDateKey(now);
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -100,12 +105,12 @@ export default function DashboardPage() {
   const salesBars = useMemo(() => {
     if (salesByDay.length === 0) {
       return Array.from({ length: 7 }, (_, index) => {
-        const date = new Date();
-        date.setDate(date.getDate() - (6 - index));
+        const date = new Date(`${today}T00:00:00Z`);
+        date.setUTCDate(date.getUTCDate() - (6 - index));
         const fullDate = [
-          date.getFullYear(),
-          String(date.getMonth() + 1).padStart(2, "0"),
-          String(date.getDate()).padStart(2, "0"),
+          date.getUTCFullYear(),
+          String(date.getUTCMonth() + 1).padStart(2, "0"),
+          String(date.getUTCDate()).padStart(2, "0"),
         ].join("-");
 
         return {
@@ -124,17 +129,17 @@ export default function DashboardPage() {
         fullDate,
       };
     });
-  }, [salesByDay]);
+  }, [salesByDay, today]);
 
   const orderBars = useMemo(() => {
     if (salesByDay.length === 0) {
       return Array.from({ length: 7 }, (_, index) => {
-        const date = new Date();
-        date.setDate(date.getDate() - (6 - index));
+        const date = new Date(`${today}T00:00:00Z`);
+        date.setUTCDate(date.getUTCDate() - (6 - index));
         const fullDate = [
-          date.getFullYear(),
-          String(date.getMonth() + 1).padStart(2, "0"),
-          String(date.getDate()).padStart(2, "0"),
+          date.getUTCFullYear(),
+          String(date.getUTCMonth() + 1).padStart(2, "0"),
+          String(date.getUTCDate()).padStart(2, "0"),
         ].join("-");
 
         return {
@@ -153,7 +158,7 @@ export default function DashboardPage() {
         fullDate,
       };
     });
-  }, [salesByDay]);
+  }, [salesByDay, today]);
 
   const ordersByChannel = useMemo(() => {
     const totalOrders = ordersByType.reduce((acc, item) => acc + Number(item.totalOrders || 0), 0);
@@ -354,7 +359,7 @@ export default function DashboardPage() {
                   <p className="text-sm font-semibold text-gray-900">{notification.title}</p>
                   <p className="mt-1 text-sm text-gray-600">{notification.message}</p>
                 </div>
-                <span className="shrink-0 text-xs text-gray-500">{formatRelativeTime(notification.createdAt)}</span>
+                <span className="shrink-0 text-xs text-gray-500">{formatRelativeTime(notification.createdAt, now)}</span>
               </div>
             </div>
           ))}

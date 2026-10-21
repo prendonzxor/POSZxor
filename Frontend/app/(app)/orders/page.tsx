@@ -1,4 +1,5 @@
 "use client";
+import { serverTimeZone } from "@/lib/server-time";
 
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input } from "@heroui/react";
@@ -233,7 +234,7 @@ export default function OrdersPage() {
                       {getStatusLabel(order.status)}
                     </span>
                   </p>
-                  <p>{order.createdAt ? new Date(order.createdAt).toLocaleDateString("es-MX") : "-"}</p>
+                  <p>{order.createdAt ? new Date(order.createdAt).toLocaleDateString("es-MX", { timeZone: serverTimeZone() }) : "-"}</p>
                   <div className="flex justify-start md:justify-end">
                     <Button
                       size="sm"

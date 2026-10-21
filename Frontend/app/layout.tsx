@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { ApiAuthGuard } from "./api-auth-guard";
 import "./globals.css";
+import { ServerTimeProvider } from "./server-time-provider";
 
 const mercadoPagoPublicKey = process.env.NEXT_PUBLIC_MERCADO_PAGO_PUBLIC_KEY || "";
 
@@ -31,8 +32,10 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <ApiAuthGuard />
-        {children}
+        <ServerTimeProvider>
+          <ApiAuthGuard />
+          {children}
+        </ServerTimeProvider>
         <Script
           src="https://sdk.mercadopago.com/js/v2"
           strategy="afterInteractive"

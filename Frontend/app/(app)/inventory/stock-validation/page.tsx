@@ -1,10 +1,15 @@
 "use client";
 
+import { serverNow, serverDateKey } from "@/lib/server-time";
+
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, toast } from "@heroui/react";
 import { getBranches, type Branch } from "@/api-implementations/branches";
 import {
-  completeStockValidationSession,
+  applyFullStockValidation,
+  getStockValidationReport,
+  type StockValidationReport,
+  createNewStockValidationSession,
   createInventory,
   ensureStockValidationSession,
   getCurrentStockValidationSession,
@@ -17,6 +22,9 @@ import {
   type StockValidationSession,
 } from "@/api-implementations/inventory";
 import { getProducts, type Product } from "@/api-implementations/products";
+
+import { downloadZeroStockCsv } from "../../reports/zero-stock-report";
+import Link from "next/link";
 
 type ValidationStatus = "all" | "pending" | "matched" | "surplus" | "shortage";
 
@@ -72,13 +80,24 @@ const getStatusClassName = (status: ValidationRow["status"]) => {
   return classes[status];
 };
 
-const getCurrentPeriodKey = () => {
-  const date = new Date();
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-};
+const getCurrentPeriodKey = () => serverDateKey().slice(0, 7);
 
 export default function StockValidationPage() {
-  const realStockInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [stockReport, setStockReport] = useState<StockValidationReport | null>(null);
+  const scannerInputRef = useRef<HTMLInputElement | null>(null);
+  const [gridProductIds, setGridProductIds] = useState<string[]>([]);
+  const [lastScannedProductId, setLastScannedProductId] = useState<string | null>(null);
+  const newValidationDialogRef = useRef<HTMLDialogElement | null>(null);
+  const [isCreatingValidation, setIsCreatingValidation] = useState(false);
+  const [newValidationError, setNewValidationError] = useState("");
+  const [updateStockOnly, setUpdateStockOnly] = useState(false);
+  const saveDialogRef = useRef<HTMLDialogElement | null>(null);
+  const [saveAll, setSaveAll] = useState(false);
+  const [pendingSave, setPendingSave] = useState<ValidationRow[] | null>(null);
+  const [confirmationError, setConfirmationError] = useState("");
+  const [isConfirmingSave, setIsConfirmingSave] = useState(false);
+  const [scanFeedback, setScanFeedback] = useState("");
+  const [isSessionLoading, setIsSessionLoading] = useState(true);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
@@ -187,6 +206,7 @@ export default function StockValidationPage() {
     let isMounted = true;
 
     const loadSession = async () => {
+      setIsSessionLoading(true);
       try {
         const currentResponse = await getCurrentStockValidationSession({
           branchId: selectedBranchId,
@@ -203,8 +223,13 @@ export default function StockValidationPage() {
           return;
         }
 
+        const reportResponse = response.session ? await getStockValidationReport(response.session.id) : { report: null };
+        if (!isMounted) return;
+        setStockReport(reportResponse.report);
+        const omittedIds = new Set(reportResponse.report?.snapshot.items.filter((item) => item.omitted).map((item) => item.productId) || []);
         setSession(response.session);
         setSavedItems(response.items);
+        setGridProductIds(response.items.filter((item) => item.realQty !== null && !omittedIds.has(item.productId)).map((item) => item.productId));
         setRealStockByProductId(
           Object.fromEntries(
             response.items
@@ -220,6 +245,8 @@ export default function StockValidationPage() {
         setSession(null);
         setSavedItems([]);
         setErrorMessage(error instanceof Error ? error.message : "No se pudo cargar el seguimiento mensual.");
+      } finally {
+        if (isMounted) setIsSessionLoading(false);
       }
     };
 
@@ -254,7 +281,7 @@ export default function StockValidationPage() {
           ? "pending"
           : difference === 0
             ? "matched"
-            : difference > 0
+            : (difference ?? 0) > 0
               ? "surplus"
               : "shortage";
 
@@ -278,21 +305,19 @@ export default function StockValidationPage() {
     });
   }, [inventoryByProductId, products, realStockByProductId, savedItemByProductId]);
 
-  const visibleRows = useMemo(() => {
+  const gridRows = useMemo(() => {
+    const byId = new Map(rows.map((row) => [row.productId, row]));
+    return gridProductIds.map((id) => byId.get(id)).filter((row): row is ValidationRow => Boolean(row));
+  }, [rows, gridProductIds]);
+  const visibleRows = useMemo(
+    () => gridRows.filter((row) => statusFilter === "all" || row.status === statusFilter),
+    [gridRows, statusFilter],
+  );
+  const searchMatches = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
-
-    return rows.filter((row) => {
-      const matchesQuery =
-        !query ||
-        row.name.toLowerCase().includes(query) ||
-        row.sku.toLowerCase().includes(query) ||
-        row.barcode.toLowerCase().includes(query) ||
-        row.productId.toLowerCase().includes(query);
-      const matchesStatus = statusFilter === "all" || row.status === statusFilter;
-
-      return matchesQuery && matchesStatus;
-    });
-  }, [rows, searchTerm, statusFilter]);
+    if (!query) return [];
+    return rows.filter((row) => [row.name, row.sku, row.barcode, row.productId].some((value) => value.toLowerCase().includes(query)));
+  }, [rows, searchTerm]);
 
   const summary = useMemo(
     () =>
@@ -309,24 +334,34 @@ export default function StockValidationPage() {
     [rows],
   );
   const isSessionCompleted = session?.status === "completed";
+  const isBusy = isCreatingValidation || isConfirmingSave || isCompletingSession || Boolean(savingProductId || adjustingProductId);
+  const isCountReady = !isLoading && !isSessionLoading && session?.branchId === selectedBranchId && session?.periodKey === periodKey && !isSessionCompleted;
   const savedItemCount = savedItems.length;
   const rowsWithValidCount = rows.filter((row) => row.realStock !== null);
-  const isReadyToComplete = rows.length > 0 && rows.every((row) => row.realStock !== null);
+
+  useEffect(() => {
+    if (isCountReady && !isBusy && !pendingSave) scannerInputRef.current?.focus({ preventScroll: true });
+  }, [isCountReady, isBusy, pendingSave]);
+
+  const addProductToCount = (row: ValidationRow) => {
+    if (!isCountReady || isBusy || pendingSave) return;
+    setRealStockByProductId((current) => ({
+      ...current,
+      [row.productId]: formatQty((parseRealStock(current[row.productId] || "") ?? 0) + 1),
+    }));
+    setGridProductIds((current) => [row.productId, ...current.filter((id) => id !== row.productId)]);
+    setLastScannedProductId(row.productId);
+    setStatusFilter("all");
+    setScanFeedback(`${row.name}: Real ${formatQty((row.realStock ?? 0) + 1)} (+1).`);
+    setSearchTerm("");
+    scannerInputRef.current?.focus({ preventScroll: true });
+  };
 
   const handleRealStockChange = (productId: string, value: string) => {
     setRealStockByProductId((current) => ({
       ...current,
       [productId]: value,
     }));
-  };
-
-  const focusRealStockInput = (productId: string) => {
-    window.setTimeout(() => {
-      const input = realStockInputRefs.current[productId];
-      input?.scrollIntoView({ behavior: "smooth", block: "center" });
-      input?.focus({ preventScroll: true });
-      input?.select();
-    }, 0);
   };
 
   const handleProductSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -339,20 +374,31 @@ export default function StockValidationPage() {
       return;
     }
 
-    const exactMatch = rows.find(
-      (row) =>
-        row.productId.toLowerCase() === query ||
-        row.sku.toLowerCase() === query ||
-        row.barcode.toLowerCase() === query,
+    event.preventDefault();
+    if (event.repeat || event.nativeEvent.isComposing || !isCountReady || isBusy || pendingSave) return;
+    const exactMatches = rows.filter((row) =>
+      row.productId.toLowerCase() === query || row.sku.toLowerCase() === query || row.barcode.toLowerCase() === query,
     );
-
-    if (!exactMatch) {
+    if (exactMatches.length !== 1) {
+      setScanFeedback(exactMatches.length > 1 ? "Hay varios productos con ese codigo. Selecciona el producto en los resultados para agregarlo." : "No se encontro una coincidencia exacta de SKU o codigo.");
+      event.currentTarget.select();
       return;
     }
+    addProductToCount(exactMatches[0]);
+  };
 
-    setStatusFilter("all");
-    setSearchTerm(exactMatch.barcode || exactMatch.sku || exactMatch.productId);
-    focusRealStockInput(exactMatch.productId);
+  const openSaveDialog = (items: ValidationRow[], all = false, updateOnly = false) => {
+    if (!isCountReady || isBusy || items.length === 0) return;
+    setConfirmationError("");
+    setUpdateStockOnly(updateOnly);
+    setSaveAll(all);
+    setPendingSave(items.map((row) => ({ ...row })));
+    saveDialogRef.current?.showModal();
+  };
+  const closeSaveDialog = () => {
+    if (isConfirmingSave) return;
+    saveDialogRef.current?.close();
+    setPendingSave(null);
   };
 
   const upsertSavedItem = (item: StockValidationItem) => {
@@ -437,9 +483,9 @@ export default function StockValidationPage() {
     }
   };
 
-  const handleApplyAdjustment = async (row: ValidationRow) => {
+  const handleApplyAdjustment = async (row: ValidationRow, quiet = false) => {
     if (!selectedBranchId || row.realStock === null) {
-      return;
+      return false;
     }
 
     try {
@@ -468,7 +514,7 @@ export default function StockValidationPage() {
       await markStockValidationItemAdjusted(activeSession.id, row.productId);
       upsertSavedItem({
         ...savedItem.item,
-        adjustedAt: new Date().toISOString(),
+        adjustedAt: serverNow().toISOString(),
       });
 
       setInventory((current) => {
@@ -480,7 +526,7 @@ export default function StockValidationPage() {
         return current.map((item, index) => (index === existingIndex ? response.inventory : item));
       });
 
-      toast.success("Stock actualizado", {
+      if (!quiet) toast.success("Stock actualizado", {
         description: `${row.name}: stock virtual ajustado a ${formatQty(row.realStock)}.`,
         actionProps: {
           children: "OK",
@@ -488,6 +534,7 @@ export default function StockValidationPage() {
           variant: "tertiary",
         },
       });
+      return true;
     } catch (error) {
       toast.danger("No se pudo ajustar stock", {
         description: error instanceof Error ? error.message : "Intenta nuevamente.",
@@ -497,16 +544,17 @@ export default function StockValidationPage() {
           variant: "tertiary",
         },
       });
+      return false;
     } finally {
       setAdjustingProductId(null);
     }
   };
 
-  const handleSaveOrCompleteSession = async () => {
+  const handleSavePartialCounts = async (items = rowsWithValidCount) => {
     try {
       setIsCompletingSession(true);
 
-      if (rowsWithValidCount.length === 0) {
+      if (items.length === 0) {
         toast.danger("Sin conteos para guardar", {
           description: "Ingresa al menos un stock real antes de guardar el avance.",
           actionProps: {
@@ -515,12 +563,12 @@ export default function StockValidationPage() {
             variant: "tertiary",
           },
         });
-        return;
+        return false;
       }
 
       const activeSession = await getOrCreateSession();
       const savedResponses = await Promise.all(
-        rowsWithValidCount.map((row) =>
+        items.map((row) =>
           saveStockValidationItem(activeSession.id, {
             productId: row.productId,
             virtualQty: row.virtualStock,
@@ -534,29 +582,11 @@ export default function StockValidationPage() {
         upsertSavedItem(response.item);
       });
 
-      if (!isReadyToComplete) {
-        toast.success("Avance guardado", {
-          description: `${savedResponses.length} conteo(s) guardado(s) para ${activeSession.periodKey}. Puedes continuar despues.`,
-          actionProps: {
-            children: "OK",
-            onPress: () => toast.clear(),
-            variant: "tertiary",
-          },
-        });
-        return;
-      }
-
-      const response = await completeStockValidationSession(activeSession.id);
-      setSession(response.session);
-      setSavedItems(response.items);
-      toast.success("Validacion completada", {
-        description: `El seguimiento ${activeSession.periodKey} quedo cerrado.`,
-        actionProps: {
-          children: "OK",
-          onPress: () => toast.clear(),
-          variant: "tertiary",
-        },
+      toast.success("Avance guardado", {
+        description: `${savedResponses.length} conteo(s) guardado(s) para ${activeSession.periodKey}. El stock no cambio y puedes continuar el conteo.`,
+        actionProps: { children: "OK", onPress: () => toast.clear(), variant: "tertiary" },
       });
+      return true;
     } catch (error) {
       toast.danger("No se pudo guardar", {
         description: error instanceof Error ? error.message : "Intenta nuevamente.",
@@ -566,9 +596,84 @@ export default function StockValidationPage() {
           variant: "tertiary",
         },
       });
+      return false;
     } finally {
       setIsCompletingSession(false);
     }
+  };
+
+  const omittedRows = useMemo(() => {
+    const counted = new Set(pendingSave?.map((row) => row.productId) || []);
+    return rows.filter((row) => !counted.has(row.productId));
+  }, [rows, pendingSave]);
+
+  const confirmSave = async (updateStock: boolean) => {
+    if (!pendingSave || isConfirmingSave || !isCountReady) return;
+    setIsConfirmingSave(true);
+    setConfirmationError("");
+    try {
+      let success: boolean;
+      if (updateStockOnly && updateStock) {
+        try {
+          const activeSession = await getOrCreateSession();
+          const response = await applyFullStockValidation(activeSession.id, {
+            scopeProductIds: rows.map((row) => row.productId),
+            items: pendingSave.map((row) => ({ productId: row.productId, realQty: row.realStock as number })),
+          });
+          setStockReport(response.report);
+          setSession({ ...activeSession, status: "completed", completedAt: response.report.createdAt });
+          success = true;
+          try {
+            const [inventoryResponse, sessionResponse] = await Promise.all([getInventory(selectedBranchId), getCurrentStockValidationSession({ branchId: selectedBranchId, periodKey })]);
+            setInventory(inventoryResponse.inventory);
+            setSavedItems(sessionResponse.items);
+          } catch { setErrorMessage("El stock y reporte se guardaron. Recarga la pagina para actualizar las cantidades mostradas."); }
+          try { downloadZeroStockCsv(response.report); } catch { /* The saved report also has a download button. */ }
+          toast.success("Stock actualizado y reporte guardado", { description: `${response.report.snapshot.items.filter((item) => item.omitted).length} productos fuera del conteo quedaron con stock cero.` });
+        } catch (error) {
+          setConfirmationError(error instanceof Error ? error.message : "No se pudo aplicar el conteo.");
+          return;
+        }
+      } else if (saveAll) success = await handleSavePartialCounts(pendingSave);
+      else success = updateStock ? await handleApplyAdjustment(pendingSave[0]) : Boolean(await handleSaveCount(pendingSave[0]));
+      if (success) {
+        saveDialogRef.current?.close();
+        setPendingSave(null);
+      } else {
+        setConfirmationError("No se pudo completar la operacion. Revisa el error y vuelve a intentar; los conteos ya guardados se conservan.");
+      }
+    } finally { setIsConfirmingSave(false); }
+  };
+
+  const handleNewValidation = async () => {
+    if (isBusy || !selectedBranchId) return;
+    setIsCreatingValidation(true);
+    setNewValidationError("");
+    try {
+      if (!isSessionCompleted && rowsWithValidCount.length > 0) {
+        if (!await handleSavePartialCounts()) {
+          setNewValidationError("No se pudieron guardar los conteos actuales. Intenta de nuevo antes de crear la validacion.");
+          return;
+        }
+      }
+      const inventoryResponse = await getInventory(selectedBranchId);
+      const response = await createNewStockValidationSession({ branchId: selectedBranchId, periodKey });
+      if (!response.session) throw new Error("No se pudo crear la nueva validacion.");
+      setSession(response.session);
+      setInventory(inventoryResponse.inventory);
+      setStockReport(null);
+      setSavedItems([]);
+      setRealStockByProductId({});
+      setGridProductIds([]);
+      setLastScannedProductId(null);
+      setSearchTerm("");
+      setStatusFilter("all");
+      setScanFeedback("Nueva validacion lista. Escanea el primer producto.");
+      newValidationDialogRef.current?.close();
+      toast.success("Nueva validacion creada");
+    } catch (error) {
+      setNewValidationError(error instanceof Error ? error.message : "No se pudo crear la validacion.");
+    } finally { setIsCreatingValidation(false); }
   };
 
   const handleExport = () => {
@@ -592,7 +697,7 @@ export default function StockValidationPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `validacion-stock-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `validacion-stock-${serverDateKey()}.csv`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -605,7 +710,7 @@ export default function StockValidationPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Validacion de stock</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Compara el stock virtual del sistema contra el conteo fisico real por sucursal.
+            Escanea o agrega productos para construir el conteo fisico real por sucursal.
           </p>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             <span className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700">
@@ -620,15 +725,18 @@ export default function StockValidationPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button onPress={() => openSaveDialog(gridRows.filter((row) => row.realStock !== null), true, true)} isDisabled={!isCountReady || isBusy || gridRows.length === 0 || gridRows.some((row) => row.realStock === null)} className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:bg-gray-300">
+            {isCompletingSession ? "Guardando..." : "Guardar items y actualizar stock"}
+          </Button>
+          <Button onPress={() => { setNewValidationError(""); newValidationDialogRef.current?.showModal(); }} isDisabled={isBusy || isLoading || isSessionLoading || !session || session.branchId !== selectedBranchId || session.periodKey !== periodKey} className="rounded border border-blue-200 px-4 py-2 text-sm font-medium text-blue-700">Nueva validacion</Button>
           <Button
             onPress={() => {
-              void handleSaveOrCompleteSession();
+              void handleSavePartialCounts(gridRows.filter((row) => row.realStock !== null));
             }}
-            isDisabled={!selectedBranchId || isSessionCompleted || products.length === 0 || rowsWithValidCount.length === 0}
-            isLoading={isCompletingSession}
+            isDisabled={!isCountReady || isBusy || !gridRows.some((row) => row.realStock !== null)}
             className="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
-            {isReadyToComplete ? "Guardar y completar" : "Guardar avance"}
+            {isCompletingSession ? "Guardando..." : "Guardar parcialmente"}
           </Button>
           <Button
             onPress={handleExport}
@@ -676,12 +784,18 @@ export default function StockValidationPage() {
               Mes
             </label>
             <input
+              disabled={isBusy}
               id="stock-period"
               type="month"
               value={periodKey}
               onChange={(event) => {
                 setPeriodKey(event.target.value || getCurrentPeriodKey());
+                setStockReport(null);
                 setRealStockByProductId({});
+                setGridProductIds([]);
+                setLastScannedProductId(null);
+                setSearchTerm("");
+                setScanFeedback("");
               }}
               className="h-10 rounded-lg border border-gray-300 px-3 text-sm text-gray-900 outline-none transition-colors focus:border-blue-500"
             />
@@ -691,11 +805,17 @@ export default function StockValidationPage() {
               Sucursal
             </label>
             <select
+              disabled={isBusy}
               id="stock-branch"
               value={selectedBranchId}
               onChange={(event) => {
                 setSelectedBranchId(event.target.value);
+                setStockReport(null);
                 setRealStockByProductId({});
+                setGridProductIds([]);
+                setLastScannedProductId(null);
+                setSearchTerm("");
+                setScanFeedback("");
               }}
               className="h-10 rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition-colors focus:border-blue-500"
             >
@@ -708,17 +828,29 @@ export default function StockValidationPage() {
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
             <label htmlFor="stock-search" className="text-xs font-semibold uppercase tracking-wide text-gray-600">
-              Buscar producto
+              Escanear o buscar producto
             </label>
             <input
+              disabled={!isCountReady || isBusy}
+              ref={scannerInputRef}
               id="stock-search"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
               type="text"
               value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
+              onChange={(event) => { setSearchTerm(event.target.value); setScanFeedback(""); }}
               onKeyDown={handleProductSearchKeyDown}
-              placeholder="Nombre, ID, SKU o codigo de barras"
+              placeholder="Escanea el codigo y presiona Enter"
               className="h-10 rounded-lg border border-gray-300 px-3 text-sm text-gray-900 outline-none transition-colors focus:border-blue-500"
             />
+            <p className="text-xs text-gray-500">Configura el lector para enviar Enter al terminar cada lectura. Cada lectura suma 1 a Real.</p>
+            {searchTerm.trim() && <div className="max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white" aria-label="Resultados de busqueda">
+              {searchMatches.length === 0 ? <p className="p-3 text-sm text-gray-500">No se encontro el producto. Revisa el codigo.</p> : searchMatches.slice(0, 20).map((row) => <button type="button" key={row.productId} disabled={!isCountReady || isBusy} onClick={() => addProductToCount(row)} className="flex w-full items-center justify-between gap-3 border-b border-gray-100 px-3 py-2 text-left text-sm hover:bg-blue-50 focus-visible:bg-blue-50">
+                <span><span className="block font-medium">{row.name}</span><span className="block text-xs text-gray-500">SKU: {row.sku || "—"} · Codigo: {row.barcode || "—"}</span></span><span className="shrink-0 text-blue-700">Agregar +1</span>
+              </button>)}
+              {searchMatches.length > 20 && <p className="p-2 text-xs text-gray-500">Hay mas resultados. Ingresa un codigo o nombre mas especifico.</p>}
+            </div>}
           </div>
           <div className="flex flex-col gap-1">
             <label htmlFor="stock-status" className="text-xs font-semibold uppercase tracking-wide text-gray-600">
@@ -740,7 +872,10 @@ export default function StockValidationPage() {
         </div>
       </Card>
 
+      <p role="status" aria-live="polite" className="text-sm text-gray-600">{scanFeedback || "Ingresa un SKU o codigo exacto y presiona Enter para sumar una unidad al conteo Real."}</p>
+
       <Card className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-200 px-5 py-3"><h2 className="text-base font-semibold text-gray-900">Productos del conteo ({gridRows.length})</h2><p className="mt-1 text-xs text-gray-500">Cada producto aparece una sola vez. Las lecturas repetidas aumentan Real y muestran el producto al inicio. Los conteos guardados se recuperan al volver.</p></div>
         <div className="overflow-x-auto">
           <div className="hidden min-w-[84rem] grid-cols-11 gap-3 border-b border-gray-200 bg-gray-50 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-gray-600 md:grid">
             <p className="col-span-2">Producto</p>
@@ -759,12 +894,12 @@ export default function StockValidationPage() {
               <div className="px-5 py-4 text-sm text-gray-600">Cargando inventario...</div>
             ) : null}
             {!isLoading && visibleRows.length === 0 ? (
-              <div className="px-5 py-4 text-sm text-gray-600">No hay productos para los filtros seleccionados.</div>
+              <div className="px-5 py-4 text-sm text-gray-600">{gridRows.length === 0 ? "Escanea un codigo o busca un producto para agregarlo al conteo." : "No hay productos del conteo con el estado seleccionado."}</div>
             ) : null}
             {visibleRows.map((row) => (
               <div
                 key={row.productId}
-                className="grid gap-2 border-b border-gray-100 px-5 py-4 text-sm text-gray-800 md:grid-cols-11 md:items-center md:gap-3"
+                className={`grid gap-2 border-b border-gray-100 px-5 py-4 text-sm text-gray-800 md:grid-cols-11 md:items-center md:gap-3 ${lastScannedProductId === row.productId ? "bg-blue-50" : ""}`}
               >
                 <div className="md:col-span-2">
                   <p className="font-semibold text-gray-900">{row.name}</p>
@@ -797,10 +932,7 @@ export default function StockValidationPage() {
                     step="0.001"
                     value={row.realStockValue}
                     onChange={(event) => handleRealStockChange(row.productId, event.target.value)}
-                    ref={(element) => {
-                      realStockInputRefs.current[row.productId] = element;
-                    }}
-                    disabled={isSessionCompleted}
+                    disabled={!isCountReady || isBusy}
                     className="h-9 w-full rounded-lg border border-gray-300 px-2 text-sm text-gray-900 outline-none focus:border-blue-500 md:max-w-[7.5rem] md:text-right"
                     placeholder="0.000"
                   />
@@ -822,10 +954,9 @@ export default function StockValidationPage() {
                   <Button
                     size="sm"
                     onPress={() => {
-                      void handleSaveCount(row);
+                      openSaveDialog([row]);
                     }}
-                    isDisabled={row.realStock === null || isSessionCompleted}
-                    isLoading={savingProductId === row.productId}
+                    isDisabled={row.realStock === null || !isCountReady || isBusy}
                     className="rounded bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
                   >
                     Guardar
@@ -833,10 +964,9 @@ export default function StockValidationPage() {
                   <Button
                     size="sm"
                     onPress={() => {
-                      void handleApplyAdjustment(row);
+                      openSaveDialog([row]);
                     }}
-                    isDisabled={row.realStock === null || row.difference === 0 || !selectedBranchId || isSessionCompleted}
-                    isLoading={adjustingProductId === row.productId}
+                    isDisabled={row.realStock === null || row.difference === 0 || !isCountReady || isBusy}
                     className="rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
                   >
                     Ajustar
@@ -847,6 +977,26 @@ export default function StockValidationPage() {
           </div>
         </div>
       </Card>
+      <dialog ref={newValidationDialogRef} aria-labelledby="new-validation-title" onCancel={(event) => { if (isCreatingValidation) event.preventDefault(); }} className="fixed inset-0 m-auto w-[calc(100%_-_2rem)] max-w-md rounded-xl border border-gray-200 bg-white p-5 text-gray-900 shadow-2xl backdrop:bg-black/40">
+        <h2 id="new-validation-title" className="text-lg font-semibold">Nueva validacion de stock</h2>
+        <p className="mt-3 text-sm text-gray-600">Se guardaran los conteos actuales y se cerrara esta validacion. La nueva validacion comenzara con una lista vacia en la misma sucursal y periodo. Esta accion no actualiza el stock; usa Guardar items y actualizar stock para aplicar el conteo.</p>
+        {newValidationError && <p role="alert" className="mt-3 text-sm text-red-600">{newValidationError}</p>}
+        <div className="mt-5 flex justify-end gap-2"><Button isDisabled={isCreatingValidation} onPress={() => newValidationDialogRef.current?.close()}>Cancelar</Button><Button isDisabled={isCreatingValidation} onPress={() => { void handleNewValidation(); }}>{isCreatingValidation ? "Creando..." : "Guardar y crear validacion"}</Button></div>
+      </dialog>
+      <dialog ref={saveDialogRef} aria-labelledby="save-stock-title" aria-describedby="save-stock-description" onCancel={(event) => { if (isConfirmingSave) event.preventDefault(); else setPendingSave(null); }} className="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%_-_2rem)] max-w-xl overflow-y-auto rounded-xl border border-gray-200 bg-white p-5 text-gray-900 shadow-2xl backdrop:bg-black/40">
+        <h2 id="save-stock-title" className="text-lg font-semibold">Guardar conteo y actualizar stock</h2>
+        <p id="save-stock-description" className="mt-2 text-sm text-gray-600">{updateStockOnly ? "Se aplicara el conteo de la lista y se pondra en CERO el stock de los productos activos no inventariados en esta lista. Se cerrara la validacion y se guardara un reporte con CSV." : "Puedes guardar solo el conteo o actualizar el stock virtual con las cantidades reales."} Sucursal: {branches.find((branch) => branch.id === selectedBranchId)?.name}. Periodo: {periodKey}.</p>
+        {updateStockOnly && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3"><h3 className="text-sm font-semibold text-amber-900">{omittedRows.length} productos fuera de la lista: stock final 0</h3><p className="mt-1 text-xs text-amber-800">Solo productos activos que no son servicios, en esta sucursal. Las cantidades reservadas se conservan.</p><div className="mt-2 max-h-40 overflow-auto"><table className="w-full text-sm"><thead><tr><th className="text-left" scope="col">Producto / SKU</th><th className="text-right" scope="col">Stock actual</th><th className="text-right" scope="col">Final</th></tr></thead><tbody>{omittedRows.map((row) => <tr key={row.productId}><td className="py-1">{row.name} · {row.sku || "—"}</td><td className="text-right">{formatQty(row.virtualStock)}</td><td className="text-right font-semibold">0.000</td></tr>)}</tbody></table></div></div>}
+        <div className="mt-4 max-h-64 overflow-auto">
+          <table className="w-full text-sm"><thead><tr><th className="py-2 text-left" scope="col">Producto</th><th className="px-2 text-right" scope="col">Virtual</th><th className="px-2 text-right" scope="col">Real</th></tr></thead><tbody>{pendingSave?.map((row) => <tr key={row.productId} className="border-t border-gray-100"><td className="py-2">{row.name}<span className="block text-xs text-gray-500">{row.sku}</span></td><td className="px-2 text-right">{formatQty(row.virtualStock)}</td><td className="px-2 text-right font-semibold">{formatQty(row.realStock)}</td></tr>)}</tbody></table>
+        </div>
+        {confirmationError && <p role="alert" className="mt-3 text-sm text-red-600">{confirmationError}</p>}
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <Button type="button" isDisabled={isConfirmingSave} onPress={closeSaveDialog}>Cancelar</Button>
+          {!updateStockOnly && <Button type="button" isDisabled={isConfirmingSave} onPress={() => { void confirmSave(false); }}>Solo guardar conteo</Button>}
+          <Button type="button" isDisabled={isConfirmingSave} onPress={() => { void confirmSave(true); }} className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white">{isConfirmingSave ? "Guardando..." : updateStockOnly ? "Confirmar conteo y poner faltantes en cero" : "Guardar y actualizar stock"}</Button>
+        </div>
+      </dialog>
     </div>
   );
 }

@@ -50,7 +50,7 @@ async function ensureStockValidationTables() {
       created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
       updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
       PRIMARY KEY (id),
-      UNIQUE KEY uq_stock_validation_session_period (tenant_id, branch_id, period_key),
+      KEY idx_stock_validation_session_period (tenant_id, branch_id, period_key, created_at),
       KEY idx_stock_validation_sessions_tenant_period (tenant_id, period_key),
       KEY idx_stock_validation_sessions_branch (branch_id),
       CONSTRAINT fk_stock_validation_sessions_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
@@ -168,6 +168,7 @@ async function getStockValidationSession({ tenantId, branchId, periodKey }) {
     WHERE tenant_id = ${tenantId}
       AND branch_id = ${branchId}
       AND period_key = ${normalizedPeriodKey}
+    ORDER BY created_at DESC, id DESC
     LIMIT 1
   `;
 
@@ -190,33 +191,29 @@ async function ensureStockValidationSession({
   await ensureStockValidationTables();
 
   const normalizedPeriodKey = normalizePeriodKey(periodKey);
-  const existing = await getStockValidationSession({ tenantId, branchId, periodKey: normalizedPeriodKey });
-  if (existing?.session) {
-    return existing;
-  }
+  return prisma.$transaction(async (tx) => {
+    const branches = await tx.$queryRaw`SELECT id FROM branches WHERE id = ${branchId} AND tenant_id = ${tenantId} FOR UPDATE`;
+    if (!branches.length) throw Object.assign(new Error("sucursal no encontrada"), { statusCode: 404 });
+    const existing = await tx.stockValidationSession.findFirst({ where: { tenantId, branchId, periodKey: normalizedPeriodKey }, orderBy: { createdAt: "desc" } });
+    const session = existing || await tx.stockValidationSession.create({ data: { tenantId, branchId, periodKey: normalizedPeriodKey, notes: normalizeNullableString(notes), createdBy } });
+    const items = await tx.stockValidationItem.findMany({ where: { tenantId, sessionId: session.id }, orderBy: { updatedAt: "desc" } });
+    return { session: mapSession(session), items: items.map(mapItem) };
+  });
+}
 
-  const id = randomUUID();
-  await prisma.$executeRaw`
-    INSERT INTO stock_validation_sessions (
-      id,
-      tenant_id,
-      branch_id,
-      period_key,
-      notes,
-      created_by
-    )
-    VALUES (
-      ${id},
-      ${tenantId},
-      ${branchId},
-      ${normalizedPeriodKey},
-      ${normalizeNullableString(notes)},
-      ${createdBy}
-    )
-  `;
-
-  const session = await getStockValidationSessionById({ tenantId, sessionId: id });
-  return { session, items: [] };
+async function createNewStockValidationSession({ tenantId, branchId, periodKey, createdBy }) {
+  const normalizedPeriodKey = normalizePeriodKey(periodKey);
+  return prisma.$transaction(async (tx) => {
+    const branches = await tx.$queryRaw`SELECT id FROM branches WHERE id = ${branchId} AND tenant_id = ${tenantId} FOR UPDATE`;
+    if (!branches.length) throw Object.assign(new Error("sucursal no encontrada"), { statusCode: 404 });
+    const latest = await tx.stockValidationSession.findFirst({ where: { tenantId, branchId, periodKey: normalizedPeriodKey }, orderBy: { createdAt: "desc" } });
+    await tx.stockValidationSession.updateMany({ where: { tenantId, branchId, periodKey: normalizedPeriodKey, status: "draft" }, data: { status: "completed", completedAt: new Date() } });
+    const session = await tx.stockValidationSession.create({ data: {
+      tenantId, branchId, periodKey: normalizedPeriodKey, createdBy,
+      createdAt: new Date(Math.max(Date.now(), (latest?.createdAt.getTime() || 0) + 1)),
+    } });
+    return { session: mapSession(session), items: [] };
+  });
 }
 
 async function listStockValidationItems({ tenantId, sessionId }) {
@@ -371,6 +368,7 @@ async function completeStockValidationSession({ tenantId, sessionId }) {
 }
 
 module.exports = {
+  createNewStockValidationSession,
   completeStockValidationSession,
   ensureStockValidationSession,
   ensureStockValidationTables,

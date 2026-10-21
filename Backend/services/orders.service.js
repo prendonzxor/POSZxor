@@ -1,5 +1,6 @@
 const { randomUUID } = require("crypto");
 const prisma = require("../lib/prisma");
+const { requireOpenSession, lockOrderRegister } = require("./cash-register.service");
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -393,44 +394,52 @@ async function updateOrderById({
     }
   }
 
-  const existingRows = await prisma.$queryRaw`
-    SELECT subtotal, discount_amount AS discountAmount, tax_amount AS taxAmount
-    FROM orders
-    WHERE tenant_id = ${tenantId}
-      AND id = ${orderId}
-    LIMIT 1
-  `;
+  const updated = await prisma.$transaction(async (tx) => {
+    await lockOrderRegister(tx, tenantId, orderId);
+    const existingRows = await tx.$queryRaw`
+      SELECT subtotal, discount_amount AS discountAmount, tax_amount AS taxAmount
+      FROM orders
+      WHERE tenant_id = ${tenantId}
+        AND id = ${orderId}
+      LIMIT 1
+      FOR UPDATE
+    `;
 
-  if (!existingRows.length) {
-    return null;
-  }
+    if (!existingRows.length) {
+      return null;
+    }
 
-  const existing = existingRows[0];
-  const subtotal = toNumber(existing.subtotal);
-  const nextDiscount = hasDiscountAmount ? round2(discountAmount) : toNumber(existing.discountAmount);
-  const nextTax = hasTaxAmount ? round2(taxAmount) : toNumber(existing.taxAmount);
-  const nextTotal = round2(Math.max(0, subtotal - nextDiscount + nextTax));
+    const existing = existingRows[0];
+    const subtotal = toNumber(existing.subtotal);
+    const nextDiscount = hasDiscountAmount ? round2(discountAmount) : toNumber(existing.discountAmount);
+    const nextTax = hasTaxAmount ? round2(taxAmount) : toNumber(existing.taxAmount);
+    const nextTotal = round2(Math.max(0, subtotal - nextDiscount + nextTax));
 
-  await prisma.$executeRaw`
-    UPDATE orders
-    SET
-      customer_id = IF(${hasCustomerId}, ${customerId ?? null}, customer_id),
-      order_type = IF(${hasOrderType}, ${orderType ?? ""}, order_type),
-      payment_type = IF(${hasPaymentType}, ${paymentType ?? ""}, payment_type),
-      status = IF(${hasStatus}, ${status ?? ""}, status),
-      discount_amount = IF(${hasDiscountAmount}, ${nextDiscount}, discount_amount),
-      tax_amount = IF(${hasTaxAmount}, ${nextTax}, tax_amount),
-      total = IF(${hasDiscountAmount} OR ${hasTaxAmount}, ${nextTotal}, total),
-      notes = IF(${hasNotes}, ${notes ?? null}, notes)
-    WHERE tenant_id = ${tenantId}
-      AND id = ${orderId}
-  `;
+    await tx.$executeRaw`
+      UPDATE orders
+      SET
+        customer_id = IF(${hasCustomerId}, ${customerId ?? null}, customer_id),
+        order_type = IF(${hasOrderType}, ${orderType ?? ""}, order_type),
+        payment_type = IF(${hasPaymentType}, ${paymentType ?? ""}, payment_type),
+        status = IF(${hasStatus}, ${status ?? ""}, status),
+        discount_amount = IF(${hasDiscountAmount}, ${nextDiscount}, discount_amount),
+        tax_amount = IF(${hasTaxAmount}, ${nextTax}, tax_amount),
+        total = IF(${hasDiscountAmount} OR ${hasTaxAmount}, ${nextTotal}, total),
+        notes = IF(${hasNotes}, ${notes ?? null}, notes)
+      WHERE tenant_id = ${tenantId}
+        AND id = ${orderId}
+    `;
+
+    return true;
+  });
+  if (!updated) return null;
 
   return getOrderById({ tenantId, orderId });
 }
 
 async function cancelOrderById({ tenantId, orderId, cancelledBy }) {
   const result = await prisma.$transaction(async (tx) => {
+    await lockOrderRegister(tx, tenantId, orderId);
     const orderRows = await tx.$queryRaw`
       SELECT
         id,
@@ -597,8 +606,10 @@ async function createCheckoutOrder({
   taxAmount,
   notes,
   items,
+  cashRegisterSessionId,
 }) {
   return prisma.$transaction(async (tx) => {
+    const register = await requireOpenSession(tx, tenantId, branchId, cashRegisterSessionId);
     const [nextOrderNumberRow] = await tx.$queryRaw`
       SELECT
         COALESCE(
@@ -646,6 +657,8 @@ async function createCheckoutOrder({
         id: true,
         name: true,
         price: true,
+        unit: true,
+        allowDecimalQty: true,
       },
     });
 
@@ -661,7 +674,12 @@ async function createCheckoutOrder({
         throw new Error("producto invalido en la orden");
       }
 
-      const qty = round3(item.qty);
+      const rawQty = Number(item.qty);
+      const decimalAllowed = product.allowDecimalQty || ["kg", "g", "l", "ml"].includes(product.unit);
+      if (!Number.isFinite(rawQty) || rawQty <= 0 || Math.abs(rawQty * 1000 - Math.round(rawQty * 1000)) > 0.00001 || (!decimalAllowed && !Number.isInteger(rawQty))) {
+        throw Object.assign(new Error(`Cantidad invalida para ${product.name}. ${decimalAllowed ? "Usa hasta 3 decimales." : "Usa unidades enteras."}`), { status: 400 });
+      }
+      const qty = round3(rawQty);
       if (qty <= 0) {
         throw new Error("qty debe ser mayor a 0");
       }
@@ -774,6 +792,8 @@ async function createCheckoutOrder({
         )
       `;
     }
+
+    await tx.$executeRaw`UPDATE orders SET cash_register_session_id = ${register.id} WHERE id = ${orderId} AND tenant_id = ${tenantId}`;
 
     for (const item of normalizedItems) {
       try {

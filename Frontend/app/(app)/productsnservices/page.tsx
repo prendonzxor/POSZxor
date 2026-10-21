@@ -280,7 +280,7 @@ export default function CreateProductsServicesPage() {
       barcode: form.barcode.trim() || undefined,
       name: form.name.trim(),
       unit: form.unit,
-      allowDecimalQty: Number(form.allow_decimal_qty || "0") === 1,
+      allowDecimalQty: ["kg", "g", "l", "ml"].includes(form.unit) || Number(form.allow_decimal_qty || "0") === 1,
       cost: Number(form.cost || "0"),
       price: Number(form.price || "0"),
       wholesalePrice: Number(form.wholesale_price || form.price || "0"),

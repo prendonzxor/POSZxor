@@ -1,4 +1,5 @@
 "use client";
+import { serverTimeZone } from "@/lib/server-time";
 
 import { Button, Card } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
@@ -30,7 +31,7 @@ const mapCustomerToRow = (customer: Customer): CustomerRow => ({
   credit_balance: Number(customer.creditBalance || 0).toFixed(2),
   discount: Number(customer.discount || 0).toFixed(2),
   is_active: Boolean(customer.isActive),
-  created_at: new Date(customer.createdAt).toLocaleString("es-MX"),
+  created_at: new Date(customer.createdAt).toLocaleString("es-MX", { timeZone: serverTimeZone() }),
   created_at_iso: customer.createdAt,
 });
 
