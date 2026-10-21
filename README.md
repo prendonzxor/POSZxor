@@ -27,7 +27,7 @@ This document explains the current `Metodo de pago` and `Crear cuenta` implement
 - Backend payment status messages: `Backend/services/payment-status-message.service.js`
 - Backend payment/card-token logs: `Backend/services/payment-log.service.js`, `Backend/services/card-token.service.js`
 
-## Environment Variables
+## Environment Variables 123
 
 Frontend:
 
